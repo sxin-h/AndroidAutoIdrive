@@ -1,5 +1,6 @@
 package me.hufman.androidautoidrive.phoneui
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -71,6 +72,7 @@ class MainActivity : AppCompatActivity() {
 
 		setContentView(R.layout.activity_main)
 
+		ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.READ_SMS), 20)
 		swMessageNotifications.setOnCheckedChangeListener { buttonView, isChecked ->
 			if (buttonView != null) onChangedSwitchNotifications(buttonView, isChecked)
 			redraw()
