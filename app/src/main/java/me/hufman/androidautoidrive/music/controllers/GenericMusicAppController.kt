@@ -2,11 +2,11 @@ package me.hufman.androidautoidrive.music.controllers
 
 import android.content.Context
 import android.os.DeadObjectException
+import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaControllerCompat
+import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
-import kotlinx.coroutines.Deferred
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.async
+import kotlinx.coroutines.*
 import me.hufman.androidautoidrive.music.*
 import java.util.*
 
@@ -15,6 +15,21 @@ import java.util.*
  * Any function may throw DeadObjectException, please catch it
  */
 class GenericMusicAppController(val context: Context, val mediaController: MediaControllerCompat, val musicBrowser: MusicBrowser?) : MusicAppController {
+	// forward any callbacks to the UI
+	val controllerCallback = object: MediaControllerCompat.Callback() {
+		override fun onPlaybackStateChanged(state: PlaybackStateCompat?) {
+			callback?.invoke(this@GenericMusicAppController)
+		}
+
+		override fun onMetadataChanged(metadata: MediaMetadataCompat?) {
+			callback?.invoke(this@GenericMusicAppController)
+		}
+
+		override fun onQueueChanged(queue: MutableList<MediaSessionCompat.QueueItem>?) {
+			callback?.invoke(this@GenericMusicAppController)
+		}
+	}
+	var callback: ((MusicAppController) -> Unit)? = null    // UI listener
 
 	@Throws(DeadObjectException::class)
 	override fun play() {
@@ -110,22 +125,38 @@ class GenericMusicAppController(val context: Context, val mediaController: Media
 	override fun browseAsync(directory: MusicMetadata?): Deferred<List<MusicMetadata>> {
 		val app = musicBrowser
 		return GlobalScope.async {
-			app?.browse(directory?.mediaId)?.map {
+			val results = app?.browse(directory?.mediaId)?.map {
 				MusicMetadata.fromMediaItem(it)
 			} ?: LinkedList()
+			results
 		}
 	}
 
-	override fun searchAsync(query: String): Deferred<List<MusicMetadata>> {
+	override fun searchAsync(query: String): Deferred<List<MusicMetadata>?> {
 		val app = musicBrowser
 		return GlobalScope.async {
 			app?.search(query)?.map {
 				MusicMetadata.fromMediaItem(it)
-			} ?: LinkedList()
+			}
 		}
 	}
 
-	override fun disconnect() {
+	override fun subscribe(callback: (MusicAppController) -> Unit) {
+		this.callback = callback
+		mediaController.registerCallback(this.controllerCallback)
+	}
 
+	override fun disconnect() {
+		try {
+			mediaController.unregisterCallback(this.controllerCallback)
+			this.callback = null
+		} catch (e: Exception) {}
+		try {
+			musicBrowser?.disconnect()
+		} catch (e: Exception) {}
+	}
+
+	override fun toString(): String {
+		return "GenericMusicAppController(${mediaController.packageName},${musicBrowser?.connected})"
 	}
 }

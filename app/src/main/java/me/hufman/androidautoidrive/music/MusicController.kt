@@ -3,15 +3,11 @@ package me.hufman.androidautoidrive.music
 import android.content.Context
 import android.os.DeadObjectException
 import android.os.Handler
-import android.support.v4.media.MediaMetadataCompat
-import android.support.v4.media.session.MediaControllerCompat
-import android.support.v4.media.session.MediaSessionCompat
-import android.support.v4.media.session.PlaybackStateCompat
 import android.util.Log
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
 import me.hufman.androidautoidrive.AppSettings
-import me.hufman.androidautoidrive.music.controllers.GenericMusicAppController
+import me.hufman.androidautoidrive.music.controllers.CombinedMusicAppController
 import me.hufman.androidautoidrive.music.controllers.MusicAppController
 import me.hufman.androidautoidrive.music.controllers.SpotifyAppController
 import java.util.*
@@ -32,15 +28,20 @@ class MusicController(val context: Context, val handler: Handler) {
 		private const val RECONNECT_TIMEOUT = 1000
 	}
 
+	val musicSessions = MusicSessions(context)
+	val connectors = listOf(
+			musicSessions.Connector(context),
+			MusicBrowser.Connector(context, handler),
+			SpotifyAppController.Connector(context)
+	)
+
 	var lastConnectTime = 0L
 	var currentAppInfo: MusicAppInfo? = null
 	var currentAppController: MusicAppController? = null
-	private var musicBrowser: MusicBrowser? = null
-	val musicSessions = MusicSessions(context)
 
-	private val controllerCallback = Callback()
 	var listener: Runnable? = null
 	var desiredPlayback = false  // if we should start playback as soon as connected
+	var triggeredPlayback = false   // whether we have triggered playback on a fresh connection
 
 	// handles manual rewinding/fastforwarding
 	private var startedSeekingTime: Long = 0    // determine how long the user has been holding the seek button
@@ -115,50 +116,17 @@ class MusicController(val context: Context, val handler: Handler) {
 			Log.i(TAG, "Switching current app connection from $currentAppInfo to $app")
 			disconnectApp(pause = switchApp)
 
-			// try to connect to an existing session
-			musicSessions.connectApp(app)
-			val sessionController = musicSessions.mediaController
-			if (sessionController != null) {
-				sessionController.registerCallback(controllerCallback, handler)
-				currentAppController?.disconnect()
-				currentAppController = GenericMusicAppController(context, sessionController, null)
-				if (desiredPlayback) {
-					Log.i(TAG, "Resuming playback on new music connection")
-					play()
+			triggeredPlayback = false
+			val controller = CombinedMusicAppController(handler, connectors, app)
+			controller.subscribe {
+				if (controller.isConnected() && desiredPlayback && !triggeredPlayback) {
+					controller.play()
+					triggeredPlayback = true
 				}
 				scheduleRedraw()
 			}
-
-			// try to connect to the media browser
-			lastConnectTime = System.currentTimeMillis()
-			musicBrowser = MusicBrowser(context, handler, app)
-			musicBrowser?.listener = Runnable {
-				Log.d(TAG, "Notified of new music browser connection")
-				musicBrowser?.mediaController?.registerCallback(controllerCallback, handler)
-				if (desiredPlayback) {
-					Log.i(TAG, "Resuming playback on new music browser connection")
-					play()
-				}
-
-				val musicBrowser = musicBrowser
-				val browserController = musicBrowser?.mediaController
-				if (browserController != null) {
-					currentAppController?.disconnect()
-					currentAppController = GenericMusicAppController(context, browserController, musicBrowser)
-				}
-				scheduleRedraw()
-				saveDesiredApp(app)
-			}
-
-			// try to connect to a Spotify app
-			if (app.packageName == "com.spotify.music") {
-				SpotifyAppController.connect(context, { spotifyController ->
-					if (currentAppInfo?.packageName == "com.spotify.music") {
-						currentAppController?.disconnect()
-						currentAppController = spotifyController
-					}
-				})
-			}
+			currentAppController = controller
+			saveDesiredApp(app)
 		}
 		currentAppInfo = app
 	}
@@ -178,18 +146,12 @@ class MusicController(val context: Context, val handler: Handler) {
 	}
 
 	fun disconnectApp(pause: Boolean = true) {
-		musicBrowser?.mediaController?.unregisterCallback(controllerCallback)
-		musicSessions.mediaController?.unregisterCallback(controllerCallback)
-
 		// trigger a pause of the current connected app
 		if (pause) {
 			pauseSync()
 		}
 
 		// then clear out the saved controller object, to defer future play() calls
-		musicBrowser?.disconnect()
-		musicBrowser = null
-		musicSessions.mediaController = null
 		currentAppController?.disconnect()
 		currentAppController = null
 	}
@@ -257,7 +219,7 @@ class MusicController(val context: Context, val handler: Handler) {
 		return controller?.browseAsync(directory) ?: CompletableDeferred(LinkedList())
 	}
 
-	fun searchAsync(query: String): Deferred<List<MusicMetadata>> = withController { controller ->
+	fun searchAsync(query: String): Deferred<List<MusicMetadata>?> = withController { controller ->
 		return controller?.searchAsync(query) ?: CompletableDeferred(LinkedList())
 	}
 
@@ -319,25 +281,14 @@ class MusicController(val context: Context, val handler: Handler) {
 
 	/** If the current app is playing, make sure the metadata is valid */
 	fun assertPlayingMetadata() = withController { controller ->
+		val playbackPosition = controller?.getPlaybackPosition()
 		val metadata = controller?.getMetadata()
-		if (controller != null && metadata == null && System.currentTimeMillis() > lastConnectTime + RECONNECT_TIMEOUT) {
+		val appInfo = currentAppInfo
+		if (appInfo != null && playbackPosition?.playbackPaused == false && metadata == null && System.currentTimeMillis() > lastConnectTime + RECONNECT_TIMEOUT) {
 			Log.w(TAG, "Detected NULL metadata for an app, reconnecting")
 			lastConnectTime = System.currentTimeMillis()
-			musicBrowser?.reconnect()
-		}
-	}
-
-	private inner class Callback: MediaControllerCompat.Callback() {
-		override fun onPlaybackStateChanged(state: PlaybackStateCompat?) {
-			scheduleRedraw()
-		}
-
-		override fun onMetadataChanged(metadata: MediaMetadataCompat?) {
-			scheduleRedraw()
-		}
-
-		override fun onQueueChanged(queue: MutableList<MediaSessionCompat.QueueItem>?) {
-			scheduleRedraw()
+			disconnectApp(false)
+			connectApp(appInfo)
 		}
 	}
 }

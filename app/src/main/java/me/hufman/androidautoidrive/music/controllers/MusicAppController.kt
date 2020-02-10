@@ -2,12 +2,14 @@ package me.hufman.androidautoidrive.music.controllers
 
 import android.os.DeadObjectException
 import kotlinx.coroutines.Deferred
-import me.hufman.androidautoidrive.music.CustomAction
-import me.hufman.androidautoidrive.music.MusicAction
-import me.hufman.androidautoidrive.music.MusicMetadata
-import me.hufman.androidautoidrive.music.PlaybackPosition
+import me.hufman.androidautoidrive.Observable
+import me.hufman.androidautoidrive.music.*
 
 interface MusicAppController {
+	interface Connector {
+		fun connect(appInfo: MusicAppInfo): Observable<MusicAppController>
+	}
+
 	@Throws(DeadObjectException::class)
 	fun play()
 
@@ -53,7 +55,15 @@ interface MusicAppController {
 
 	fun browseAsync(directory: MusicMetadata?): Deferred<List<MusicMetadata>>
 
-	fun searchAsync(query: String): Deferred<List<MusicMetadata>>
+	fun searchAsync(query: String): Deferred<List<MusicMetadata>?>
 
+	/**
+	 * Subscribes to receive notice of new metadata or other status
+	 */
+	fun subscribe(callback: (MusicAppController) -> Unit)
+
+	/**
+	 * Disconnects the app, and also clears out any subscribed callback
+	 */
 	fun disconnect()
 }
